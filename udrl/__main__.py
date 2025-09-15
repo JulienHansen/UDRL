@@ -18,6 +18,7 @@ from pathlib import Path
 import json
 import torch
 import random as rnd
+import pandas as pd
 
 
 @dataclass
@@ -221,6 +222,60 @@ def run_experiment(conf: UDRLExperiment):
         np.save(str(base_path / "desired_horizons.npy"), desired_horizons)
         dump_dict(infos, str(base_path / "learning_infos.json"))
 
+    # New, corrected code to save a sample of the training data
+    print("Saving training data for interpretability analysis...")
+    
+    # Check if the memory is empty before sampling
+    if not agent.memory.buffer:
+        print("Warning: Replay buffer is empty. No training data to save.")
+    else:
+        # Get a sample of episodes from the buffer
+        sample_size = min(len(agent.memory.buffer), 1000)
+        random_episodes = agent.memory.get_random_samples(sample_size)
+
+        # Initialize lists to store flattened data
+        all_features = []
+        all_targets = []
+
+        # Iterate through episodes and extract data points
+        for episode in random_episodes:
+            T = len(episode["states"])
+            # The 'train' method in agent.py samples from a random timestep 't1'
+            # to the end of the episode 't2'. We'll replicate that logic here
+            # to get the exact data the model was trained on.
+            for t1 in range(T - 1):
+                t2 = T
+                state = episode["states"][t1]
+                desired_return = sum(episode["rewards"][t1:t2])
+                desired_horizon = t2 - t1
+                action = episode["actions"][t1]
+
+                # Combine state and commands into a single feature vector
+                feature = np.concatenate(
+                    (
+                        state[0],
+                        [
+                            desired_return * conf.return_scale,
+                            desired_horizon * conf.horizon_scale,
+                        ],
+                    )
+                )
+                all_features.append(feature)
+                all_targets.append(action)
+
+        if all_features:
+            # Construct a DataFrame for easy inspection and saving
+            feature_names = [f"state_{i}" for i in range(all_features[0].shape[0] - 2)]
+            feature_names += ["desired_return", "desired_horizon"]
+            
+            df = pd.DataFrame(all_features, columns=feature_names)
+            df["action"] = all_targets
+            
+            # Save the DataFrame to a CSV file
+            df.to_csv(base_path / "training_data.csv", index=False)
+            print("Training data saved successfully to training_data.csv.")
+        else:
+            print("Warning: No valid data points found in the sample. CSV file not created.")
 
 warnings.simplefilter("ignore", DeprecationWarning)
 warnings.simplefilter("ignore", FutureWarning)
