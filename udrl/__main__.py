@@ -18,7 +18,8 @@ from pathlib import Path
 import json
 import torch
 import random as rnd
-
+import pandas as pd
+import time
 
 @dataclass
 class UDRLExperiment:
@@ -89,6 +90,9 @@ class UDRLExperiment:
     save_policy: bool = with_meta(True, "Whether to save the trained policy ")
     save_learning_infos: bool = with_meta(
         True, "Whether to save the learning infos"
+    )
+    save_test_data: bool = with_meta(
+        True, "Whether to save the final testing data"
     )
 
 
@@ -197,6 +201,60 @@ def run_experiment(conf: UDRLExperiment):
     final_res = {}
     if conf.final_testing:
         print("Start Testing...")
+        # New code to capture test data
+        if conf.save_test_data:
+            print("Capturing final testing data...")
+            all_test_features = []
+            all_test_targets = []
+            
+            for sim_num in trange(conf.final_testing_sample):
+                state, _ = toy_env.reset()
+                tru, ter = False, False
+                cum_rew = 0
+                
+                while not (tru or ter):
+                    # Use the trained policy with test=True
+                    desired_return = conf.final_desired_return - cum_rew
+                    desired_horizon = conf.final_desired_horizon - len(all_test_features)
+                    
+                    state_expanded = np.expand_dims(state, axis=0)
+                    command = np.array(
+                        [
+                            desired_return * conf.return_scale,
+                            desired_horizon * conf.horizon_scale,
+                        ]
+                    )
+                    command_expanded = np.expand_dims(command, axis=0)
+                    
+                    action = agent.policy(state_expanded, command_expanded, test=True)
+                    
+                    # Log the data with new columns
+                    feature = np.concatenate((state, command))
+                    feature_list = list(state)
+                    feature_list.extend([
+                        desired_return * conf.return_scale,
+                        desired_horizon * conf.horizon_scale,
+                        sim_num,
+                        time.time()
+                    ])  
+                    all_test_features.append(feature_list)
+                    all_test_targets.append(action)
+                    next_state, reward, tru, ter, _ = toy_env.step(action)
+                    state = next_state
+                    cum_rew += reward
+            if all_test_features:
+                feature_names = [f"state_{i}" for i in range(toy_env.observation_space.shape[0])]
+                feature_names += ["desired_return", "desired_horizon", "simulation_number", "timestamp"]
+                
+                df = pd.DataFrame(all_test_features, columns=feature_names)
+                df["action"] = all_test_targets
+                
+                df.to_csv(base_path / "testing_data.csv", index=False)
+                print("Testing data saved successfully to testing_data.csv.")
+            else:
+                print("Warning: No valid data points found in the test. CSV file not created.")
+
+
         final_r = [
             agent.collect_episode(
                 conf.final_desired_return,
@@ -221,6 +279,59 @@ def run_experiment(conf: UDRLExperiment):
         np.save(str(base_path / "desired_horizons.npy"), desired_horizons)
         dump_dict(infos, str(base_path / "learning_infos.json"))
 
+    # New, corrected code to save a sample of the training data
+    print("Saving training data for interpretability analysis...")
+    
+    # Check if the memory is empty before sampling
+    if not agent.memory.buffer:
+        print("Warning: Replay buffer is empty. No training data to save.")
+    else:
+        # Get a sample of episodes from the buffer
+        sample_size = min(len(agent.memory.buffer), 1000)
+        random_episodes = agent.memory.get_random_samples(sample_size)
+
+        # Initialize lists to store flattened data
+        all_features = []
+        all_targets = []
+
+        # Iterate through episodes and extract data points
+
+
+        
+        for sim_num, episode in enumerate(random_episodes):
+            T = len(episode["states"])
+            for t1 in range(T - 1):
+                t2 = T
+                state = episode["states"][t1]
+                desired_return = sum(episode["rewards"][t1:t2])
+                desired_horizon = t2 - t1
+                action = episode["actions"][t1]
+
+                # Log the data with new columns
+                feature_list = list(state[0])
+                feature_list.extend([
+                    desired_return * conf.return_scale,
+                    desired_horizon * conf.horizon_scale,
+                    sim_num,
+                    time.time()
+                ])
+                all_features.append(feature_list)
+                all_targets.append(action)
+
+
+        if all_features:
+            # Construct a DataFrame for easy inspection and saving
+            feature_names = [f"state_{i}" for i in range(toy_env.observation_space.shape[0])]
+            feature_names += ["desired_return", "desired_horizon", "simulation_number", "timestamp"]
+            
+            df = pd.DataFrame(all_features, columns=feature_names)
+            df["action"] = all_targets
+            
+            # Save the DataFrame to a CSV file
+            df.to_csv(base_path / "training_data.csv", index=False)
+            print("Training data saved successfully to training_data.csv.")
+        else:
+            print("Warning: No valid data points found in the sample. CSV file not created.")
 
 warnings.simplefilter("ignore", DeprecationWarning)
 warnings.simplefilter("ignore", FutureWarning)
