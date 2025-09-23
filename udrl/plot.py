@@ -140,9 +140,9 @@ def create_gif_from_plots(
 
 base_path = Path("data")
 env = "CartPole-v0"
-estimator = "ExtraTreesClassifier"
+estimator = "RandomForestClassifier"
 seed = str(42)
-conf_name = "estimator_nameensemble.ExtraTreesClassifier_train_per_iter1"
+conf_name = "base"
 desired_return = 200
 desired_horizon = 200
 
