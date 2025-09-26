@@ -109,6 +109,7 @@ udrl/pyvenv.cfg
 udrlnew/
 roughchecker.ipynb
 requrirements.txt
+resources/example_plot_resources_RF/
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
