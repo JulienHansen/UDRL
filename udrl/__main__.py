@@ -3,6 +3,7 @@ from udrl.policies import SklearnPolicy, NeuralPolicy
 from udrl.catch import CatchAdaptor
 from dataclasses import dataclass, asdict
 import gymnasium as gym
+from gymnasium import spaces
 from tqdm import trange
 import numpy as np
 import warnings
@@ -20,11 +21,45 @@ import torch
 import random as rnd
 import pandas as pd
 import time
+from typing import List,Optional
+
+
+class FeatureMaskingWrapper(gym.Wrapper):
+    def __init__(self, env, mask_indices: list):
+        super().__init__(env)
+        self.mask_indices = sorted(mask_indices, reverse=True) # Sort descending to pop correctly
+        
+        # Calculate the new observation space shape
+        original_shape = self.env.observation_space.shape[0]
+        new_shape = original_shape - len(self.mask_indices)
+        
+        # Define the new, smaller observation space
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(new_shape,), dtype=np.float32
+        )
+
+    def _apply_mask(self, observation):
+        obs_list = list(observation)
+        for index in self.mask_indices:
+            obs_list.pop(index)
+        return np.array(obs_list, dtype=np.float32)
+
+    def reset(self, **kwargs):
+        observation, info = self.env.reset(**kwargs)
+        return self._apply_mask(observation), info
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        return self._apply_mask(observation), reward, terminated, truncated, info
+
+
 
 @dataclass
 class UDRLExperiment:
     """Configuration for an Upside-Down Reinforcement Learning experiment."""
 
+
+    #mask_features: Optional[List[int]] = None
     env_name: str = with_meta(
         "CartPole-v0", "Name of the Gym environment to use "
     )
@@ -101,7 +136,7 @@ def dump_dict(data, file_path):
         json.dump(data, file, indent=4)
 
 
-def run_experiment(conf: UDRLExperiment):
+def run_experiment(conf: UDRLExperiment, mask_features: Optional[List[int]] = None):
     """Runs an Upside-Down Reinforcement Learning experiment.
 
     Parameters
@@ -119,11 +154,23 @@ def run_experiment(conf: UDRLExperiment):
     * Collects episodes of experience and updates the policy.
     * Optionally performs final testing,saves the policy and learning infos.
     """
+
+
     torch.manual_seed(conf.seed)
     np.random.seed(conf.seed)
     rnd.seed(conf.seed)
 
-    toy_env = (
+    base_env = (
+        CatchAdaptor(dense=True)
+        if conf.env_name == "catch"
+        else gym.make(conf.env_name)
+    )
+
+    # Apply the wrapper if mask_features is specified
+    if mask_features:
+        print(f"Applying feature mask. Removing indices: {mask_features}")
+        toy_env = FeatureMaskingWrapper(base_env, mask_indices=mask_features)
+    else: toy_env = (
         CatchAdaptor(dense=True)
         if conf.env_name == "catch"
         else gym.make(conf.env_name)
@@ -142,6 +189,7 @@ def run_experiment(conf: UDRLExperiment):
     agent = UpsideDownAgent(
         conf=apply(AgentHyper, asdict(conf)),
         policy=policy,
+        env=toy_env
     )
     epi_bar = trange(conf.max_episode)
 
@@ -339,11 +387,20 @@ parser = argparse.ArgumentParser(
     description="Runs an Upside-Down Reinforcement Learning experiment."
     "NOTE: Default values are for the CartPole env with RandomForestClassifier"
 )
+parser.add_argument(
+    "--mask-features",
+    nargs="+",
+    type=int,
+    help="List of state feature indices to mask (e.g., --mask-features 0 3)"
+)
+
+
 arguments = create_argparse_dict(UDRLExperiment)
 for k, v in arguments.items():
     parser.add_argument(k, **v)
 args = parser.parse_args()
 conf = create_experiment_from_args(args, UDRLExperiment)
+
 print(conf)
 
-run_experiment(conf)
+run_experiment(conf, mask_features=args.mask_features)
