@@ -9,7 +9,7 @@ from tqdm import trange
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, Optional
-
+from gymnasium import spaces
 import gymnasium as gym
 import DTRGym  # Necessary import to register the environments
 
@@ -23,6 +23,34 @@ from udrl.cli import (
     dataclass_non_defaults_to_string,
     apply,
 )
+
+class FeatureMaskingWrapper(gym.Wrapper):
+    def __init__(self, env, mask_indices: list):
+        super().__init__(env)
+        self.mask_indices = sorted(mask_indices, reverse=True) # Sort descending to pop correctly
+        
+        # Calculate the new observation space shape
+        original_shape = self.env.observation_space.shape[0]
+        new_shape = original_shape - len(self.mask_indices)
+        
+        # Define the new, smaller observation space
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(new_shape,), dtype=np.float32
+        )
+
+    def _apply_mask(self, observation):
+        obs_list = list(observation)
+        for index in self.mask_indices:
+            obs_list.pop(index)
+        return np.array(obs_list, dtype=np.float32)
+
+    def reset(self, **kwargs):
+        observation, info = self.env.reset(**kwargs)
+        return self._apply_mask(observation), info
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        return self._apply_mask(observation), reward, terminated, truncated, info
 
 # Configuration dataclass with defaults tuned for DTR
 @dataclass
@@ -59,12 +87,19 @@ def dump_dict(data, file_path):
     with open(file_path, "w") as file:
         json.dump(data, file, indent=4)
 
-def run_experiment(conf: UDRLExperiment):
+def run_experiment(conf: UDRLExperiment, mask_features: Optional[List[int]] = None):
     torch.manual_seed(conf.seed)
     np.random.seed(conf.seed)
     rnd.seed(conf.seed)
 
-    env = gym.make(conf.env_name, n_act=conf.env_n_act)
+# --- Modify the environment creation ---
+    base_env = gym.make(conf.env_name, n_act=conf.env_n_act)
+    
+    if mask_features:
+        print(f"Applying feature mask. Removing indices: {mask_features}")
+        env = FeatureMaskingWrapper(base_env, mask_indices=mask_features)
+    else:
+        env = base_env
     
     if conf.estimator_name == "neural":
         policy = NeuralPolicy(env.observation_space.shape[0], action_size=env.action_space.n)
@@ -262,6 +297,16 @@ def run_experiment(conf: UDRLExperiment):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Runs a UDRL experiment on a DTR-Bench environment.")
+    
+    # --- ADD THIS NEW ARGUMENT ---
+    parser.add_argument(
+        "--mask-features",
+        nargs="+",
+        type=int,
+        help="List of state feature indices to mask (e.g., --mask-features 0 2)"
+    )
+    # --- End of new argument ---
+    
     arguments = create_argparse_dict(UDRLExperiment)
     for k, v in arguments.items():
         # NOTE: If booleans cause issues, you may need to add this:
@@ -277,4 +322,6 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     conf = create_experiment_from_args(args, UDRLExperiment)
-    run_experiment(conf)
+    
+    # --- Pass the new argument to the function ---
+    run_experiment(conf, mask_features=args.mask_features) 
