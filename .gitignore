@@ -29,6 +29,7 @@ MANIFEST
 venv/
 data/
 rough.py
+fixed_state_plots/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
